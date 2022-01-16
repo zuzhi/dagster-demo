@@ -2,3 +2,8 @@ __pycache__/
 .python-version
 output/
 *.egg-info/
+dagster-home/
+.telemetry/
+history/
+logs/
+schedules/
