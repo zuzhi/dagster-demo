@@ -5,9 +5,12 @@ import requests
 import csv
 import sqlite3
 from copy import deepcopy
-from dagster import job, op, resource, graph, get_dagster_logger, DagsterType, TypeCheck, Field, String, config_from_files, file_relative_path
+from dagster import job, op, resource, graph, get_dagster_logger, DagsterType,\
+                    TypeCheck, Field, String, config_from_files, file_relative_path,\
+                    AssetMaterialization, EventMetadata, Output
 import sqlalchemy
 import sqlalchemy.ext.declarative
+import os
 
 
 @op
@@ -145,15 +148,50 @@ def bad_download_csv():
 
 
 # @op(ins={"cereals": In(SimpleDataFrame)})
-@op(ins={"cereals": In(LessSimpleDataFrame)})
-def sort_by_calories(cereals):
+# @op(ins={"cereals": In(LessSimpleDataFrame)})
+# def sort_by_calories(cereals):
+#     sorted_cereals = sorted(
+#         cereals, key=lambda cereal: int(cereal["calories"])
+#     )
+#
+#     get_dagster_logger().info(
+#         f'Most caloric cereal: {sorted_cereals[-1]["name"]}'
+#     )
+
+
+@op
+def sort_by_calories(context, cereals):
     sorted_cereals = sorted(
         cereals, key=lambda cereal: int(cereal["calories"])
     )
+    least_caloric = sorted_cereals[0]["name"]
+    most_caloric = sorted_cereals[-1]["name"]
 
-    get_dagster_logger().info(
-        f'Most caloric cereal: {sorted_cereals[-1]["name"]}'
+    logger = get_dagster_logger()
+    logger.info(f"Least caloric cereal: {least_caloric}")
+    logger.info(f"Most caloric cereal: {most_caloric}")
+
+    fieldnames = list(sorted_cereals[0].keys())
+    sorted_cereals_csv_path = os.path.abspath(
+        f"output/calories_sorted_{context.run_id}.csv"
     )
+    os.makedirs(os.path.dirname(sorted_cereals_csv_path), exist_ok=True)
+
+    with open(sorted_cereals_csv_path, "w") as fd:
+        writer = csv.DictWriter(fd, fieldnames)
+        writer.writeheader()
+        writer.writerows(sorted_cereals)
+
+    yield AssetMaterialization(
+        asset_key="sorted_cereals_csv",
+        description="Cereals data frame sorted by caloric content",
+        metadata={
+            "sorted_cereals_csv_path": EventMetadata.path(
+                sorted_cereals_csv_path
+            )
+        },
+    )
+    yield Output(None)
 
 
 @op(required_resource_keys={"warehouse"})
@@ -263,11 +301,13 @@ def calories():
 # calories_test_job = calories.to_job(
 #     resource_defs={"warehouse": local_sqlite_warehouse_resource},
 # )
-calories_test_job = calories.to_job(
-    resource_defs={"warehouse": local_sqlite_warehouse_resource},
-    config={"ops": {"download_csv": {"config": {"url": "https://docs.dagster.io/assets/cereal.csv"}}},
-            "resources": {"warehouse": {"config": {"conn_str": ":memory:"}}}},
-)
+
+# calories_test_job = calories.to_job(
+#     resource_defs={"warehouse": local_sqlite_warehouse_resource},
+#     config={"ops": {"download_csv": {"config": {"url": "https://docs.dagster.io/assets/cereal.csv"}}},
+#             "resources": {"warehouse": {"config": {"conn_str": ":memory:"}}}},
+# )
+
 # calories_dev_job = calories.to_job(
 #     resource_defs={"warehouse": sqlalchemy_postgres_warehouse_resource},
 #     config=config_from_files(
@@ -309,6 +349,11 @@ def resources_job():
     normalize_calories(download_csv())
 
 
+@job
+def materialization_job():
+    sort_by_calories(download_csv())
+
+
 run_config = {
         "ops": {
             "download_csv": {
@@ -323,4 +368,5 @@ if __name__ == "__main__":
     # result = hello_cereal_job.execute_in_process()
     # result = configurable_job.execute_in_process(run_config=run_config)
     # result = calories_test_job.execute_in_process(run_config=run_config)
-    result = calories_test_job.execute_in_process()
+    # result = calories_test_job.execute_in_process()
+    result = materialization_job.execute_in_process()
